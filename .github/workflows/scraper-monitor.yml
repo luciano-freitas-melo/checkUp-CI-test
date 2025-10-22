@@ -25,41 +25,89 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pipenv
-          pipenv install --dev --system
+          pip install -r requirements.txt || echo "requirements.txt not found, continuing..."
 
       - name: Test Individual Scrapers
         id: scraper-test
         run: |
           echo "FAILED_SCRAPERS=" >> $GITHUB_OUTPUT
+          echo "ERROR_LOGS=" >> $GITHUB_OUTPUT
 
-          portals=("uol" "globo" "folha" "estadao" "veja" "r7" "ig" "terra" "metropoles")
+          # Lista dos portais baseada nos arquivos existentes
+          portals=()
+          error_logs=""
+          
+          # Detectar automaticamente os spiders disponíveis
+          if [ -d "spiders" ]; then
+            for spider_file in spiders/*.py; do
+              if [ -f "$spider_file" ] && [ "$(basename "$spider_file")" != "__init__.py" ]; then
+                portal=$(basename "$spider_file" .py)
+                portals+=("$portal")
+              fi
+            done
+          fi
+          
+          echo "Detected portals: ${portals[@]}"
+          
           failed_portals=""
-
+          
           for portal in "${portals[@]}"; do
             echo "Testing $portal..."
             
-            if ! python -c "
+            # Teste do Spider
+            spider_error=$(python -c "
           import sys
+          import traceback
           sys.path.append('.')
           try:
-              exec(f'from spiders.{portal.replace(\"-\", \"\")} import *')
+              module = __import__(f'spiders.{portal}', fromlist=[''])
               print(f'{portal} spider import: OK')
           except Exception as e:
-              print(f'{portal} spider import: FAILED - {e}')
+              print(f'SPIDER_ERROR: {e}')
+              traceback.print_exc()
               sys.exit(1)
+          " 2>&1)
+                      
+                      spider_success=$?
+                      
+                      # Teste do Play
+                      play_error=$(python -c "
+          import sys
+          import traceback
+          sys.path.append('.')
           try:
-              exec(f'from plays.{portal.replace(\"-\", \"\")} import *')  
+              module = __import__(f'plays.{portal}', fromlist=[''])
               print(f'{portal} play import: OK')
           except Exception as e:
-              print(f'{portal} play import: FAILED - {e}')
+              print(f'PLAY_ERROR: {e}')
+              traceback.print_exc()
               sys.exit(1)
-          " 2>/dev/null; then
-              echo "$portal: ❌ FAILED"
+          " 2>&1)
+                      
+                      play_success=$?
+                      
+                      # Verificar se houve falha
+                      if [ $spider_success -ne 0 ] || [ $play_success -ne 0 ]; then
+                        echo "$portal: ❌ FAILED"
               if [ -n "$failed_portals" ]; then
                 failed_portals="$failed_portals,$portal"
               else
                 failed_portals="$portal"
+              fi
+              
+              # Capturar logs de erro
+              portal_errors="### $portal Errors:\n"
+              if [ $spider_success -ne 0 ]; then
+                portal_errors="$portal_errors**Spider Error:**\n\`\`\`\n$spider_error\n\`\`\`\n\n"
+              fi
+              if [ $play_success -ne 0 ]; then
+                portal_errors="$portal_errors**Play Error:**\n\`\`\`\n$play_error\n\`\`\`\n\n"
+              fi
+              
+              if [ -n "$error_logs" ]; then
+                error_logs="$error_logs\n$portal_errors"
+              else
+                error_logs="$portal_errors"
               fi
             else
               echo "$portal: ✅ OK"
@@ -67,7 +115,24 @@ jobs:
           done
 
           echo "FAILED_SCRAPERS=$failed_portals" >> $GITHUB_OUTPUT
+          
+          # Salvar logs em arquivo temporário para passar entre steps
+          echo -e "$error_logs" > /tmp/error_logs.txt
+          
           echo "Failed scrapers: $failed_portals"
+          echo "Error logs saved to /tmp/error_logs.txt"
+
+      - name: Read Error Logs
+        id: read-logs
+        if: steps.scraper-test.outputs.FAILED_SCRAPERS != ''
+        run: |
+          if [ -f "/tmp/error_logs.txt" ]; then
+            # Escapar newlines para GitHub Actions
+            error_content=$(cat /tmp/error_logs.txt | sed ':a;N;$!ba;s/\n/\\n/g' | sed 's/"/\\"/g')
+            echo "ERROR_LOGS=$error_content" >> $GITHUB_OUTPUT
+          else
+            echo "ERROR_LOGS=No error logs available" >> $GITHUB_OUTPUT
+          fi
 
       - name: Create Issues for Failed Scrapers
         if: steps.scraper-test.outputs.FAILED_SCRAPERS != ''
@@ -75,6 +140,7 @@ jobs:
         with:
           script: |
             const failedScrapers = '${{ steps.scraper-test.outputs.FAILED_SCRAPERS }}';
+            const errorLogs = `${{ steps.read-logs.outputs.ERROR_LOGS }}`.replace(/\\n/g, '\n').replace(/\\"/g, '"');
 
             if (!failedScrapers) return;
 
@@ -105,6 +171,13 @@ jobs:
                 minute: '2-digit'
               });
               
+              // Extrair logs específicos do portal
+              const portalLogs = errorLogs.split('### ').find(log => 
+                log.toLowerCase().startsWith(scraper.toLowerCase())
+              );
+              
+              const logSection = portalLogs ? `## 📋 Logs de Erro\n\n${portalLogs}` : '## 📋 Logs de Erro\n\nNenhum log específico capturado.';
+              
               if (existingIssue) {
                 const comment = `## 🔄 Falha Recorrente Detectada
 
@@ -112,6 +185,8 @@ jobs:
             **Status**: Scraper ainda falhando no health check
 
             O scraper do **${portalName}** continua apresentando problemas. Requer atenção urgente.
+
+            ${logSection}
 
             ---
 
@@ -143,31 +218,28 @@ jobs:
             - [ ] **Estrutura**: Problemas na estrutura de classes do spider/play
             - [ ] **Configuração**: Parâmetros de configuração incorretos
 
+            ${logSection}
+
             ## 🔧 Arquivos Relacionados
 
-            - \`spiders/${scraper.replace('-', '')}.py\`
-            - \`plays/${scraper.replace('-', '')}.py\`
+            - \`spiders/${scraper}.py\`
+            - \`plays/${scraper}.py\`
 
             ## 🛠️ Como Investigar
 
             1. **Teste local**:
                \`\`\`bash
-               python -c "from spiders.${scraper.replace('-', '')} import *"
-               python -c "from plays.${scraper.replace('-', '')} import *"
+               python -c "from spiders.${scraper} import *"
+               python -c "from plays.${scraper} import *"
                \`\`\`
 
             2. **Execute o scraper**:
                \`\`\`bash
-               python scrape.py --spider ${scraper}
+               make crawl_${scraper}
+               make scrape_${scraper}
                \`\`\`
 
             3. **Verifique os logs** para mensagens de erro específicas
-
-            ## 🎯 Portal: ${portalName}
-
-            - **Site**: Adicione URLs de exemplo do portal aqui
-            - **Última atualização conhecida**: Verifique quando foi a última modificação
-            - **Problemas conhecidos**: Documente problemas recorrentes
 
             ## 📚 Recursos Úteis
 
