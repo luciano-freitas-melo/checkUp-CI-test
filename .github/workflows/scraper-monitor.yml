@@ -36,59 +36,76 @@ jobs:
           # Lista dos portais baseada nos arquivos existentes
           portals=()
           error_logs=""
-          
+
           # Detectar automaticamente os spiders disponíveis
           if [ -d "spiders" ]; then
             for spider_file in spiders/*.py; do
-              if [ -f "$spider_file" ] && [ "$(basename "$spider_file")" != "__init__.py" ]; then
-                portal=$(basename "$spider_file" .py)
-                portals+=("$portal")
+              if [ -f "$spider_file" ]; then
+                filename=$(basename "$spider_file" .py)
+                # Filtrar apenas arquivos que são realmente spiders (excluir base, items, __init__)
+                if [[ "$filename" != "__init__" && "$filename" != "base" && "$filename" != "items" ]]; then
+                  portals+=("$filename")
+                fi
               fi
             done
           fi
-          
+
           echo "Detected portals: ${portals[@]}"
-          
+
           failed_portals=""
-          
+
           for portal in "${portals[@]}"; do
             echo "Testing $portal..."
             
-            # Teste do Spider
-            spider_error=$(python -c "
+            spider_success=0
+            play_success=0
+            spider_error=""
+            play_error=""
+            
+            # Criar script temporário para teste do spider
+            cat > /tmp/test_spider.py << EOF
           import sys
           import traceback
           sys.path.append('.')
           try:
-              module = __import__(f'spiders.{portal}', fromlist=[''])
-              print(f'{portal} spider import: OK')
+              module = __import__('spiders.${portal}', fromlist=[''])
+              print('${portal} spider import: OK')
           except Exception as e:
               print(f'SPIDER_ERROR: {e}')
               traceback.print_exc()
               sys.exit(1)
-          " 2>&1)
-                      
-                      spider_success=$?
-                      
-                      # Teste do Play
-                      play_error=$(python -c "
+          EOF
+            
+            # Teste do Spider
+            set +e
+            spider_error=$(python /tmp/test_spider.py 2>&1)
+            spider_success=$?
+            
+            # Criar script temporário para teste do play
+            cat > /tmp/test_play.py << EOF
           import sys
           import traceback
           sys.path.append('.')
           try:
-              module = __import__(f'plays.{portal}', fromlist=[''])
-              print(f'{portal} play import: OK')
+              module = __import__('plays.${portal}', fromlist=[''])
+              print('${portal} play import: OK')
           except Exception as e:
               print(f'PLAY_ERROR: {e}')
               traceback.print_exc()
               sys.exit(1)
-          " 2>&1)
-                      
-                      play_success=$?
-                      
-                      # Verificar se houve falha
-                      if [ $spider_success -ne 0 ] || [ $play_success -ne 0 ]; then
-                        echo "$portal: ❌ FAILED"
+          EOF
+            
+            # Teste do Play
+            play_error=$(python /tmp/test_play.py 2>&1)
+            play_success=$?
+            set -e
+            
+            # Limpar arquivos temporários
+            rm -f /tmp/test_spider.py /tmp/test_play.py
+            
+            # Verificar se houve falha
+            if [ $spider_success -ne 0 ] || [ $play_success -ne 0 ]; then
+              echo "$portal: ❌ FAILED"
               if [ -n "$failed_portals" ]; then
                 failed_portals="$failed_portals,$portal"
               else
@@ -115,10 +132,10 @@ jobs:
           done
 
           echo "FAILED_SCRAPERS=$failed_portals" >> $GITHUB_OUTPUT
-          
+
           # Salvar logs em arquivo temporário para passar entre steps
           echo -e "$error_logs" > /tmp/error_logs.txt
-          
+
           echo "Failed scrapers: $failed_portals"
           echo "Error logs saved to /tmp/error_logs.txt"
 
