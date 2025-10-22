@@ -157,7 +157,12 @@ jobs:
         with:
           script: |
             const failedScrapers = '${{ steps.scraper-test.outputs.FAILED_SCRAPERS }}';
-            const errorLogs = `${{ steps.read-logs.outputs.ERROR_LOGS }}`.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+            let errorLogs = '';
+            try {
+              errorLogs = `${{ steps.read-logs.outputs.ERROR_LOGS }}`.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+            } catch (e) {
+              errorLogs = 'Erro ao processar logs';
+            }
 
             if (!failedScrapers) return;
 
@@ -166,7 +171,6 @@ jobs:
             for (const scraper of scrapers) {
               const portalName = scraper.charAt(0).toUpperCase() + scraper.slice(1);
               
-              // Verificar se já existe issue aberta para este scraper
               const existingIssues = await github.rest.issues.listForRepo({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -180,34 +184,32 @@ jobs:
               );
               
               const currentDate = new Date().toLocaleString('pt-BR', {
-                timeZone: 'America/Sao_Paulo',
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit',
-                hour: '2-digit',
-                minute: '2-digit'
+                timeZone: 'America/Sao_Paulo'
               });
               
-              // Extrair logs específicos do portal
               const portalLogs = errorLogs.split('### ').find(log => 
                 log.toLowerCase().startsWith(scraper.toLowerCase())
               );
               
-              const logSection = portalLogs ? `## 📋 Logs de Erro\n\n${portalLogs}` : '## 📋 Logs de Erro\n\nNenhum log específico capturado.';
+              const logSection = portalLogs ? 
+                '## 📋 Logs de Erro\n\n' + portalLogs : 
+                '## 📋 Logs de Erro\n\nNenhum log específico capturado.';
               
               if (existingIssue) {
-                const comment = `## 🔄 Falha Recorrente Detectada
-
-            **Data/Hora**: ${currentDate}  
-            **Status**: Scraper ainda falhando no health check
-
-            O scraper do **${portalName}** continua apresentando problemas. Requer atenção urgente.
-
-            ${logSection}
-
-            ---
-
-            *Update automático do monitor de scrapers*`;
+                const comment = [
+                  '## 🔄 Falha Recorrente Detectada',
+                  '',
+                  '**Data/Hora**: ' + currentDate,
+                  '**Status**: Scraper ainda falhando no health check',
+                  '',
+                  'O scraper do **' + portalName + '** continua apresentando problemas. Requer atenção urgente.',
+                  '',
+                  logSection,
+                  '',
+                  '---',
+                  '',
+                  '*Update automático do monitor de scrapers*'
+                ].join('\n');
 
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
@@ -216,56 +218,58 @@ jobs:
                   body: comment
                 });
                 
-                console.log(`Updated existing issue for ${scraper} #${existingIssue.number}`);
+                console.log('Updated existing issue for ' + scraper + ' #' + existingIssue.number);
                 
               } else {
-                const issueTitle = `[SCRAPER] Falha no Scraper - ${portalName}`;
-                const issueBody = `## 🚨 Health Check Failed - ${portalName}
-
-            **Portal**: ${portalName}  
-            **Data/Hora**: ${currentDate}  
-            **Tipo**: Falha na importação de spider/play
-
-            ## 📋 Problema Detectado
-
-            O monitor automático de scrapers detectou falhas no scraper do **${portalName}**. O scraper não pode ser importado corretamente, indicando possíveis problemas de:
-
-            - [ ] **Sintaxe**: Erro de sintaxe no código Python
-            - [ ] **Imports**: Dependências faltando ou imports incorretos  
-            - [ ] **Estrutura**: Problemas na estrutura de classes do spider/play
-            - [ ] **Configuração**: Parâmetros de configuração incorretos
-
-            ${logSection}
-
-            ## 🔧 Arquivos Relacionados
-
-            - \`spiders/${scraper}.py\`
-            - \`plays/${scraper}.py\`
-
-            ## 🛠️ Como Investigar
-
-            1. **Teste local**:
-               \`\`\`bash
-               python -c "from spiders.${scraper} import *"
-               python -c "from plays.${scraper} import *"
-               \`\`\`
-
-            2. **Execute o scraper**:
-               \`\`\`bash
-               make crawl_${scraper}
-               make scrape_${scraper}
-               \`\`\`
-
-            3. **Verifique os logs** para mensagens de erro específicas
-
-            ## 📚 Recursos Úteis
-
-            - [Tutorial de Spiders e Plays](https://github.com/aosfatos/check-up/blob/main/TUTORIAL_SPIDERS_PLAYS.md)
-            - [Template de Adaptação](https://github.com/aosfatos/check-up/blob/main/.github/ISSUE_TEMPLATE/adaptar-scraper-existente.md)
-
-            ---
-
-            *Esta issue foi criada automaticamente pelo monitor de scrapers. Quando o scraper for corrigido, esta issue será fechada automaticamente no próximo health check.*`;
+                const issueTitle = '[SCRAPER] Falha no Scraper - ' + portalName;
+                const issueBody = [
+                  '## 🚨 Health Check Failed - ' + portalName,
+                  '',
+                  '**Portal**: ' + portalName,
+                  '**Data/Hora**: ' + currentDate,
+                  '**Tipo**: Falha na importação de spider/play',
+                  '',
+                  '## 📋 Problema Detectado',
+                  '',
+                  'O monitor automático de scrapers detectou falhas no scraper do **' + portalName + '**. O scraper não pode ser importado corretamente, indicando possíveis problemas de:',
+                  '',
+                  '- [ ] **Sintaxe**: Erro de sintaxe no código Python',
+                  '- [ ] **Imports**: Dependências faltando ou imports incorretos',
+                  '- [ ] **Estrutura**: Problemas na estrutura de classes do spider/play',
+                  '- [ ] **Configuração**: Parâmetros de configuração incorretos',
+                  '',
+                  logSection,
+                  '',
+                  '## 🔧 Arquivos Relacionados',
+                  '',
+                  '- `spiders/' + scraper + '.py`',
+                  '- `plays/' + scraper + '.py`',
+                  '',
+                  '## 🛠️ Como Investigar',
+                  '',
+                  '1. **Teste local**:',
+                  '   ```bash',
+                  '   python -c "from spiders.' + scraper + ' import *"',
+                  '   python -c "from plays.' + scraper + ' import *"',
+                  '   ```',
+                  '',
+                  '2. **Execute o scraper**:',
+                  '   ```bash',
+                  '   make crawl_' + scraper,
+                  '   make scrape_' + scraper,
+                  '   ```',
+                  '',
+                  '3. **Verifique os logs** para mensagens de erro específicas',
+                  '',
+                  '## 📚 Recursos Úteis',
+                  '',
+                  '- [Tutorial de Spiders e Plays](https://github.com/aosfatos/check-up/blob/main/TUTORIAL_SPIDERS_PLAYS.md)',
+                  '- [Template de Adaptação](https://github.com/aosfatos/check-up/blob/main/.github/ISSUE_TEMPLATE/adaptar-scraper-existente.md)',
+                  '',
+                  '---',
+                  '',
+                  '*Esta issue foi criada automaticamente pelo monitor de scrapers. Quando o scraper for corrigido, esta issue será fechada automaticamente no próximo health check.*'
+                ].join('\n');
 
                 const newIssue = await github.rest.issues.create({
                   owner: context.repo.owner,
@@ -275,7 +279,7 @@ jobs:
                   labels: ['scraper', 'portal', 'bug', 'automated', 'high-priority']
                 });
                 
-                console.log(`Created new scraper failure issue for ${scraper} #${newIssue.data.number}`);
+                console.log('Created new scraper failure issue for ' + scraper + ' #' + newIssue.data.number);
               }
             }
 
@@ -308,28 +312,27 @@ jobs:
               
               if (!isStillFailing) {
                 const currentDate = new Date().toLocaleString('pt-BR', {
-                  timeZone: 'America/Sao_Paulo',
-                  year: 'numeric',
-                  month: '2-digit',
-                  day: '2-digit',
-                  hour: '2-digit',
-                  minute: '2-digit'
+                  timeZone: 'America/Sao_Paulo'
                 });
+                
+                const comment = [
+                  '## ✅ Scraper Recuperado',
+                  '',
+                  '**Data/Hora**: ' + currentDate,
+                  '**Status**: Health check passou com sucesso',
+                  '',
+                  'O scraper está funcionando normalmente novamente! Esta issue está sendo fechada automaticamente.',
+                  '',
+                  '---',
+                  '',
+                  '*Fechamento automático pelo monitor de scrapers.*'
+                ].join('\n');
                 
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: issue.number,
-                  body: `## ✅ Scraper Recuperado
-
-            **Data/Hora**: ${currentDate}  
-            **Status**: Health check passou com sucesso
-
-            O scraper está funcionando normalmente novamente! Esta issue está sendo fechada automaticamente.
-
-            ---
-
-            *Fechamento automático pelo monitor de scrapers.*`
+                  body: comment
                 });
                 
                 await github.rest.issues.update({
@@ -339,6 +342,6 @@ jobs:
                   state: 'closed'
                 });
                 
-                console.log(`Closed resolved scraper issue #${issue.number}`);
+                console.log('Closed resolved scraper issue #' + issue.number);
               }
             }
