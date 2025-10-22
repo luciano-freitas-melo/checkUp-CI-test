@@ -154,12 +154,15 @@ jobs:
       - name: Create Issues for Failed Scrapers
         if: steps.scraper-test.outputs.FAILED_SCRAPERS != ''
         uses: actions/github-script@v7
+        env:
+          FAILED_SCRAPERS: ${{ steps.scraper-test.outputs.FAILED_SCRAPERS }}
+          ERROR_LOGS: ${{ steps.read-logs.outputs.ERROR_LOGS }}
         with:
           script: |
-            const failedScrapers = '${{ steps.scraper-test.outputs.FAILED_SCRAPERS }}';
+            const failedScrapers = process.env.FAILED_SCRAPERS || '';
             let errorLogs = '';
             try {
-              errorLogs = `${{ steps.read-logs.outputs.ERROR_LOGS }}`.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+              errorLogs = (process.env.ERROR_LOGS || '').replace(/\\n/g, '\n').replace(/\\"/g, '"');
             } catch (e) {
               errorLogs = 'Erro ao processar logs';
             }
@@ -285,9 +288,11 @@ jobs:
 
       - name: Close Resolved Scraper Issues
         uses: actions/github-script@v7
+        env:
+          FAILED_SCRAPERS: ${{ steps.scraper-test.outputs.FAILED_SCRAPERS }}
         with:
           script: |
-            const failedScrapers = '${{ steps.scraper-test.outputs.FAILED_SCRAPERS }}';
+            const failedScrapers = process.env.FAILED_SCRAPERS || '';
             const failedList = failedScrapers ? failedScrapers.split(',').filter(s => s.trim()) : [];
 
             const openIssues = await github.rest.issues.listForRepo({
